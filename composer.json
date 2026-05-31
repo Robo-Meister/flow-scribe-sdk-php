@@ -1,0 +1,17 @@
+{
+  "name": "robo-meister/flow-scribe-api",
+  "description": "FlowScribe OCR PHP SDK for connecting to the Robo-Meister OCR API",
+  "type": "library",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.2",
+    "ext-curl": "*",
+    "ext-fileinfo": "*",
+    "ext-json": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Robo\\FlowScribeOcr\\": "src/"
+    }
+  }
+}
