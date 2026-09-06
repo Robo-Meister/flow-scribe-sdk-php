@@ -9,6 +9,9 @@
     "ext-fileinfo": "*",
     "ext-json": "*"
   },
+  "scripts": {
+    "test": "@php tests/test.php"
+  },
   "autoload": {
     "psr-4": {
       "Robo\\FlowScribeOcr\\": "src/"

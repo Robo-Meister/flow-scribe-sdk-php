@@ -16,19 +16,21 @@ final class FlowScribeOcrClient
     }
 
     /**
+     * @param array<string, mixed> $options Optional routing/correlation headers.
      * @return array<string, mixed>
      */
-    public function health(): array
+    public function health(array $options = []): array
     {
-        return $this->request('GET', '/health');
+        return $this->request('GET', '/health', headers: $this->headersForOptions($options));
     }
 
     /**
+     * @param array<string, mixed> $options Optional routing/correlation headers.
      * @return array<string, mixed>
      */
-    public function metadata(): array
+    public function metadata(array $options = []): array
     {
-        return $this->request('GET', '/metadata');
+        return $this->request('GET', '/metadata', headers: $this->headersForOptions($options));
     }
 
     /**
@@ -75,7 +77,8 @@ final class FlowScribeOcrClient
     }
 
     /**
-     * Process a document with defaults suited for Robo review payload rendering.
+     * Request review-related fields when the server supports them.
+     * Returns the server response unchanged; review_payload is not guaranteed.
      *
      * @param array<string, mixed> $options
      * @return array<string, mixed>
@@ -134,8 +137,8 @@ final class FlowScribeOcrClient
 
         return [
             'diagnostics_available' => false,
-            'health' => $this->health(),
-            'metadata' => $this->metadata(),
+            'health' => $this->request('GET', '/health', headers: $headers),
+            'metadata' => $this->request('GET', '/metadata', headers: $headers),
         ];
     }
 
@@ -150,19 +153,21 @@ final class FlowScribeOcrClient
     }
 
     /**
+     * @param array<string, mixed> $options Reuse the upload's organisation/workspace context.
      * @return array<string, mixed>
      */
-    public function flowScribeStatus(string $jobId): array
+    public function flowScribeStatus(string $jobId, array $options = []): array
     {
-        return $this->request('GET', '/api/integration/flowscribe/status/' . rawurlencode($jobId));
+        return $this->request('GET', '/api/integration/flowscribe/status/' . rawurlencode($jobId), headers: $this->headersForOptions($options));
     }
 
     /**
+     * @param array<string, mixed> $options Reuse the upload's organisation/workspace context.
      * @return array<string, mixed>
      */
-    public function rcInvoiceStatus(string $jobId): array
+    public function rcInvoiceStatus(string $jobId, array $options = []): array
     {
-        return $this->request('GET', '/api/rc/invoice-ocr/status/' . rawurlencode($jobId));
+        return $this->request('GET', '/api/rc/invoice-ocr/status/' . rawurlencode($jobId), headers: $this->headersForOptions($options));
     }
 
     /**
@@ -218,22 +223,27 @@ final class FlowScribeOcrClient
         $headers = $this->headersForOptions($options);
 
         $temporaryConfigPath = null;
-        if (isset($options['config_path']) && $options['config_path'] !== '') {
-            $configPath = (string) $options['config_path'];
-            if (!is_file($configPath) || !is_readable($configPath)) {
-                throw new FlowScribeOcrException(sprintf('Config file is not readable: %s', $configPath));
-            }
-            $fields['config'] = new CURLFile($configPath, 'application/json', basename($configPath));
-        } elseif (isset($options['config']) && is_array($options['config'])) {
-            $temporaryConfigPath = tempnam(sys_get_temp_dir(), 'flowscribe-ocr-config-');
-            if ($temporaryConfigPath === false) {
-                throw new FlowScribeOcrException('Unable to create a temporary config file.');
-            }
-            file_put_contents($temporaryConfigPath, json_encode($options['config'], JSON_THROW_ON_ERROR));
-            $fields['config'] = new CURLFile($temporaryConfigPath, 'application/json', 'config.json');
-        }
-
         try {
+            if (isset($options['config_path']) && $options['config_path'] !== '') {
+                $configPath = (string) $options['config_path'];
+                if (!is_file($configPath) || !is_readable($configPath)) {
+                    throw new FlowScribeOcrException(sprintf('Config file is not readable: %s', $configPath));
+                }
+                $fields['config'] = new CURLFile($configPath, 'application/json', basename($configPath));
+            } elseif (isset($options['config']) && is_array($options['config'])) {
+                // Encode before creating a file so invalid JSON cannot leak a temporary file.
+                $configJson = json_encode($options['config'], JSON_THROW_ON_ERROR);
+                $configPath = tempnam(sys_get_temp_dir(), 'flowscribe-ocr-config-');
+                if ($configPath === false) {
+                    throw new FlowScribeOcrException('Unable to create a temporary config file.');
+                }
+                $temporaryConfigPath = $configPath;
+                if (file_put_contents($configPath, $configJson) !== strlen($configJson)) {
+                    throw new FlowScribeOcrException('Unable to write the temporary config file.');
+                }
+                $fields['config'] = new CURLFile($configPath, 'application/json', 'config.json');
+            }
+
             return $this->request('POST', $path, body: $fields, headers: $headers);
         } finally {
             if ($temporaryConfigPath !== null && is_file($temporaryConfigPath)) {
@@ -323,8 +333,9 @@ final class FlowScribeOcrClient
         $raw = curl_exec($handle);
         if ($raw === false) {
             $message = curl_error($handle) ?: 'Unknown cURL error.';
+            $transportErrorCode = curl_errno($handle);
             curl_close($handle);
-            throw new FlowScribeOcrException($message);
+            throw new FlowScribeOcrException($message, transportErrorCode: $transportErrorCode);
         }
 
         $statusCode = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
@@ -339,12 +350,12 @@ final class FlowScribeOcrClient
                 $statusCode,
                 $decoded,
                 $rawBody,
-                $this->extractHeader($responseHeaders, 'x-correlation-id'),
+                $this->responseCorrelationId($responseHeaders, $decoded),
                 $this->extractErrorCode($decoded)
             );
         }
 
-        return $this->decodeJson($rawBody, $statusCode);
+        return $this->decodeJson($rawBody, $statusCode, $this->responseCorrelationId($responseHeaders));
     }
 
     private function url(string $path): string
@@ -369,13 +380,13 @@ final class FlowScribeOcrClient
             return null;
         }
 
-        return is_array($decoded) ? $decoded : null;
+        return is_array($decoded) && str_starts_with(ltrim($raw), '{') ? $decoded : null;
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function decodeJson(string $raw, int $statusCode): array
+    private function decodeJson(string $raw, int $statusCode, ?string $correlationId = null): array
     {
         try {
             $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
@@ -383,19 +394,37 @@ final class FlowScribeOcrClient
             throw new FlowScribeOcrException(
                 sprintf('FlowScribe OCR API returned invalid JSON with HTTP %d.', $statusCode),
                 $statusCode,
-                rawResponseBody: $raw
+                rawResponseBody: $raw,
+                correlationId: $correlationId
             );
         }
 
-        if (!is_array($decoded)) {
+        if (!is_array($decoded) || !str_starts_with(ltrim($raw), '{')) {
             throw new FlowScribeOcrException(
                 sprintf('FlowScribe OCR API returned a non-object JSON payload with HTTP %d.', $statusCode),
                 $statusCode,
-                rawResponseBody: $raw
+                rawResponseBody: $raw,
+                correlationId: $correlationId
             );
         }
 
         return $decoded;
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @param array<string, mixed> $payload
+     */
+    private function responseCorrelationId(array $headers, array $payload = []): ?string
+    {
+        $header = $this->extractHeader($headers, 'x-correlation-id')
+            ?? $this->extractHeader($headers, 'x-trace-id');
+        if ($header !== null) {
+            return $header;
+        }
+
+        $value = $payload['correlation_id'] ?? null;
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**
