@@ -113,6 +113,7 @@ try {
         assert_true($exception->getResponseBody() === [], 'non-JSON response body should be empty');
         assert_true(str_contains($exception->getRawResponseBody() ?? '', 'Bad Gateway'), 'non-JSON raw response body not preserved');
     }
+    require __DIR__ . '/regression.php';
 } finally {
     @unlink($file);
 }

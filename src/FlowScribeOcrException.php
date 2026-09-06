@@ -15,7 +15,8 @@ final class FlowScribeOcrException extends RuntimeException
         private readonly ?array $responseBody = null,
         private readonly ?string $rawResponseBody = null,
         private readonly ?string $correlationId = null,
-        private readonly ?string $errorCode = null
+        private readonly ?string $errorCode = null,
+        private readonly ?int $transportErrorCode = null
     ) {
         parent::__construct($message, $statusCode ?? 0);
     }
@@ -46,5 +47,11 @@ final class FlowScribeOcrException extends RuntimeException
     public function getErrorCode(): ?string
     {
         return $this->errorCode;
+    }
+
+    /** cURL error number; a transport failure does not prove the server did not process the request. */
+    public function getTransportErrorCode(): ?int
+    {
+        return $this->transportErrorCode;
     }
 }
